@@ -358,7 +358,7 @@ func TestInjectAutoAnnotationPermutations(t *testing.T) {
 }
 
 func TestInjectAutoPod(t *testing.T) {
-	podYAML, err := testutil.ReadFile("testdata/pod.yaml")
+	podsYAML, err := testutil.ReadFile("testdata/pods.yaml")
 	if err != nil {
 		testutil.AnnotatedFatalf(t, "failed to read inject test file",
 			"failed to read inject test file: %s", err)
@@ -366,8 +366,11 @@ func TestInjectAutoPod(t *testing.T) {
 
 	injectNS := "inject-pod-test"
 	podName := "inject-pod-test-terminus"
+	opaquePodName := "inject-opaque-pod-test-terminus"
+	opaquePorts := "11211"
 	nsAnnotations := map[string]string{
-		k8s.ProxyInjectAnnotation: k8s.ProxyInjectEnabled,
+		k8s.ProxyInjectAnnotation:      k8s.ProxyInjectEnabled,
+		k8s.ProxyOpaquePortsAnnotation: opaquePorts,
 	}
 
 	truthy := true
@@ -422,10 +425,10 @@ func TestInjectAutoPod(t *testing.T) {
 	ctx := context.Background()
 
 	TestHelper.WithDataPlaneNamespace(ctx, injectNS, nsAnnotations, t, func(t *testing.T, ns string) {
-		o, err := TestHelper.Kubectl(podYAML, "--namespace", ns, "create", "-f", "-")
+		o, err := TestHelper.Kubectl(podsYAML, "--namespace", ns, "create", "-f", "-")
 		if err != nil {
-			testutil.AnnotatedFatalf(t, "failed to create pod",
-				"failed to create pod/%s in namespace %s for %s: %s", podName, ns, err, o)
+			testutil.AnnotatedFatalf(t, "failed to create pods",
+				"failed to create pods in namespace %s for %s: %s", ns, err, o)
 		}
 
 		o, err = TestHelper.Kubectl("", "--namespace", ns, "wait", "--for=condition=initialized", "--timeout=120s", "pod/"+podName)
@@ -434,12 +437,34 @@ func TestInjectAutoPod(t *testing.T) {
 				"failed to wait for condition=initialized for pod/%s in namespace %s: %s: %s", podName, ns, err, o)
 		}
 
+		// Check that pods with no annotation inherit from the namespace.
 		pods, err := TestHelper.GetPods(ctx, ns, map[string]string{"app": podName})
 		if err != nil {
 			testutil.AnnotatedFatalf(t, "failed to get pods", "failed to get pods for namespace %s: %s", ns, err)
 		}
 		if len(pods) != 1 {
 			testutil.Fatalf(t, "wrong number of pods returned for namespace %s: %d", ns, len(pods))
+		}
+		annotation, ok := pods[0].Annotations[k8s.ProxyOpaquePortsAnnotation]
+		if !ok {
+			testutil.Fatalf(t, "pod in namespace %s did not inherit opaque ports annotation", ns)
+		}
+		if annotation != opaquePorts {
+			testutil.Fatalf(t, "expected pod in namespace %s to have %s opaque ports, but it had %s", ns, opaquePorts, annotation)
+		}
+
+		// Check that pods with an annotation do not inherit from the
+		// namespace.
+		opaquePods, err := TestHelper.GetPods(ctx, ns, map[string]string{"app": opaquePodName})
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "failed to get pods", "failed to get pods for namespace %s: %s", ns, err)
+		}
+		if len(opaquePods) != 1 {
+			testutil.Fatalf(t, "wrong number of pods returned for namespace %s: %d", ns, len(opaquePods))
+		}
+		annotation = opaquePods[0].Annotations[k8s.ProxyOpaquePortsAnnotation]
+		if annotation != "22122" {
+			testutil.Fatalf(t, "expected pod in namespace %s to have %s opaque ports, but it had %s", ns, opaquePorts, annotation)
 		}
 
 		containers := pods[0].Spec.Containers
@@ -461,6 +486,72 @@ func TestInjectAutoPod(t *testing.T) {
 			if !reflect.DeepEqual(expectedInitContainer, initContainer) {
 				testutil.AnnotatedFatalf(t, "malformed init container", "malformed init container:\nexpected:\n%#v\nactual:\n%#v", expectedInitContainer, initContainer)
 			}
+		}
+	})
+}
+
+func TestInjectDisabledAutoPod(t *testing.T) {
+	podsYAML, err := testutil.ReadFile("testdata/pods.yaml")
+	if err != nil {
+		testutil.AnnotatedFatalf(t, "failed to read inject test file",
+			"failed to read inject test file: %s", err)
+	}
+
+	ns := "inject-disabled-pod-test"
+	podName := "inject-pod-test-terminus"
+	opaquePodName := "inject-opaque-pod-test-terminus"
+	opaquePorts := "11211"
+	nsAnnotations := map[string]string{
+		k8s.ProxyInjectAnnotation:      k8s.ProxyInjectDisabled,
+		k8s.ProxyOpaquePortsAnnotation: opaquePorts,
+	}
+	ctx := context.Background()
+	TestHelper.WithDataPlaneNamespace(ctx, ns, nsAnnotations, t, func(t *testing.T, ns string) {
+		o, err := TestHelper.Kubectl(podsYAML, "--namespace", ns, "create", "-f", "-")
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "failed to create pods",
+				"failed to create pods in namespace %s for %s: %s", ns, err, o)
+		}
+
+		o, err = TestHelper.Kubectl("", "--namespace", ns, "wait", "--for=condition=initialized", "--timeout=120s", "pod/"+podName)
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "failed to wait for condition=initialized",
+				"failed to wait for condition=initialized for pod/%s in namespace %s: %s: %s", podName, ns, err, o)
+		}
+
+		// Check that pods with no annotation inherit from the namespace.
+		pods, err := TestHelper.GetPods(ctx, ns, map[string]string{"app": podName})
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "failed to get pods", "failed to get pods for namespace %s: %s", ns, err)
+		}
+		if len(pods) != 1 {
+			testutil.Fatalf(t, "wrong number of pods returned for namespace %s: %d", ns, len(pods))
+		}
+		annotation, ok := pods[0].Annotations[k8s.ProxyOpaquePortsAnnotation]
+		if !ok {
+			testutil.Fatalf(t, "pod in namespace %s did not inherit opaque ports annotation", ns)
+		}
+		if annotation != opaquePorts {
+			testutil.Fatalf(t, "expected pod in namespace %s to have %s opaque ports, but it had %s", ns, opaquePorts, annotation)
+		}
+
+		// Check that pods with an annotation do not inherit from the
+		// namespace.
+		opaquePods, err := TestHelper.GetPods(ctx, ns, map[string]string{"app": opaquePodName})
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "failed to get pods", "failed to get pods for namespace %s: %s", ns, err)
+		}
+		if len(opaquePods) != 1 {
+			testutil.Fatalf(t, "wrong number of pods returned for namespace %s: %d", ns, len(opaquePods))
+		}
+		annotation = opaquePods[0].Annotations[k8s.ProxyOpaquePortsAnnotation]
+		if annotation != "22122" {
+			testutil.Fatalf(t, "expected pod in namespace %s to have %s opaque ports, but it had %s", ns, opaquePorts, annotation)
+		}
+
+		containers := pods[0].Spec.Containers
+		if proxyContainer := testutil.GetProxyContainer(containers); proxyContainer != nil {
+			testutil.Fatalf(t, "pod in namespace %s should not have been injected", ns)
 		}
 	})
 }

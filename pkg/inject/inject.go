@@ -136,7 +136,7 @@ type podPatch struct {
 	DebugContainer        *l5dcharts.DebugContainer `json:"debugContainer"`
 }
 
-type servicePatch struct {
+type annotationPatch struct {
 	OpaquePorts string
 }
 
@@ -148,6 +148,7 @@ func NewResourceConfig(values *l5dcharts.Values, origin Origin) *ResourceConfig 
 		origin:        origin,
 	}
 
+	config.workload.Meta = &metav1.ObjectMeta{}
 	config.pod.meta = &metav1.ObjectMeta{}
 
 	// Values can be nil for commands like Uninject
@@ -305,23 +306,29 @@ func (conf *ResourceConfig) GetPodPatch(injectProxy bool) ([]byte, error) {
 	return res, nil
 }
 
-// GetServicePatch returns the JSON patch containing the service opaque ports
-// annotation if the annotation is present on the namespace, but absent on the
-// service.
-func (conf *ResourceConfig) GetServicePatch() ([]byte, error) {
-	_, ok := conf.workload.Meta.Annotations[k8s.ProxyOpaquePortsAnnotation]
-	// There does not need to be a patch if the service already has the
-	// annotation.
+// GetOpaquePorts returns two values. The first value is the the opaque ports
+// value if it is present on the workload or the namespace. The second value
+// is true if it was on the workload and false otherwise.
+func (conf *ResourceConfig) GetOpaquePorts() (string, bool) {
+	annotation, ok := conf.pod.meta.Annotations[k8s.ProxyOpaquePortsAnnotation]
 	if ok {
-		return nil, nil
+		return annotation, true
 	}
-	opaquePorts, ok := conf.nsAnnotations[k8s.ProxyOpaquePortsAnnotation]
-	// There does not need to be a patch if the namespace does not have the
-	// annotation.
-	if !ok {
-		return nil, nil
+	annotation, ok = conf.workload.Meta.Annotations[k8s.ProxyOpaquePortsAnnotation]
+	if ok {
+		return annotation, true
 	}
-	patch := &servicePatch{
+	annotation, ok = conf.nsAnnotations[k8s.ProxyOpaquePortsAnnotation]
+	if ok {
+		return annotation, false
+	}
+	return "", false
+}
+
+// CreateAnnotationPatch returns a json patch which adds the opaque ports
+// annotation with the `opaquePorts` value.
+func (conf *ResourceConfig) CreateAnnotationPatch(opaquePorts string) ([]byte, error) {
+	patch := &annotationPatch{
 		OpaquePorts: opaquePorts,
 	}
 	t, err := template.New("tpl").Parse(tpl)
@@ -919,6 +926,11 @@ func (conf *ResourceConfig) IsNamespace() bool {
 // IsService checks if a given config is a workload of Kind service
 func (conf *ResourceConfig) IsService() bool {
 	return strings.ToLower(conf.workload.metaType.Kind) == k8s.Service
+}
+
+// IsPod checks if a given config is a workload of Kind pod
+func (conf *ResourceConfig) IsPod() bool {
+	return strings.ToLower(conf.workload.metaType.Kind) == k8s.Pod
 }
 
 //InjectNamespace annotates any given Namespace config
